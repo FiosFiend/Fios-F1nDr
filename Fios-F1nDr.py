@@ -5,8 +5,8 @@ Device Information Lookup Based on MAC Address
 
 This script processes one or more MAC addresses (either provided directly or
 from a file) and attempts to match them against a predefined database of
-MAC prefixes to retrieve device-specific information such as model,
-manufacturer, UUID format, SSID, and Admin password formats and examples.
+MAC prefixes and/or specific MAC ranges to retrieve device-specific information
+such as model, manufacturer, UUID format, SSID, and Admin password formats and examples.
 
 Usage:
   Run the script and enter MAC addresses separated by commas,
@@ -15,10 +15,13 @@ Usage:
 """
 
 import re
+import os # Keep os import for potential future file operations, though not directly used in this snippet
+import json # Keep json import if you revert to external JSON loading or for future use
 from collections import defaultdict
 
 # MAC_DATA contains information about different device models
 # The 'MAC Prefix' field contains space-separated OUI (first three octets) prefixes
+# 'MAC_Ranges' contains specific start and end MAC addresses for granular matching
 MAC_DATA = [
     {
         "Model": "ARC-XCI55AX",
@@ -35,7 +38,10 @@ MAC_DATA = [
         "SSID Password Ex:": "cedar3-hew-shad",
         "Admin Password Length": "9",
         "Admin Password Format": "All Uppercase, no A,E,I,M,O,U,W,Y",
-        "Admin Password Ex:": "L4VX6BKCD"
+        "Admin Password Ex:": "L4VX6BKCD",
+        "MAC_Ranges": [
+            {"start": "DCF51B555405", "end": "DCF51B58F33D"}
+        ]
     },
     {
         "Model": "ASK-NCM1100",
@@ -51,7 +57,7 @@ MAC_DATA = [
         "SSID Password Format": "<word>-<word>-<word> + 1 <digit>\nNote: <digit> can be 3,4,6,7,9 and always after 1st or 2nd word, never 3rd",
         "SSID Password Ex:": "woo-quilt6-bow",
         "Admin Password Length": "9",
-        "Admin Password Format": "All Uppercase, no A,E,I,M,O,U,W,Y",
+        "Admin Password Format": "All Uppercase, no A,E,I,M,O:U,W,Y",
         "Admin Password Ex:": "XCQ9NVGK9"
     },
     {
@@ -86,7 +92,10 @@ MAC_DATA = [
         "SSID Password Ex:": "cost9-nor-jug",
         "Admin Password Length": "9",
         "Admin Password Format": "All Uppercase, no A,E,I,O,U",
-        "Admin Password Ex:": "4TRQJD6GB"
+        "Admin Password Ex:": "4TRQJD6GB",
+        "MAC_Ranges": [
+            {"start": "DCF51B4F9CD2", "end": "DCF51B51B854"}
+        ]
     },
     {
         "Model": "CME1000",
@@ -103,7 +112,10 @@ MAC_DATA = [
         "SSID Password Ex:": "oak3-spigot-pay",
         "Admin Password Length": "9",
         "Admin Password Format": "All Uppercase, no A,E,I,O,U",
-        "Admin Password Ex:": "NKFYQD94G"
+        "Admin Password Ex:": "NKFYQD94G",
+        "MAC_Ranges": [
+            {"start": "DCF51B51F412", "end": "DCF51B52C984"}
+        ]
     },
     { # G3100 or E3200 - Threshold 3 (SSID Length 15, Admin Length 9)
         "Model": "G3100 or E3200",
@@ -127,7 +139,7 @@ MAC_DATA = [
             {"start": "6ABDC5500545", "end": "6ABDC5FFFFFF"},
             {"start": "72BDC5500545", "end": "72BDC5FFFFFF"},
             {"start": "7490BC000000", "end": "7490BCFFFFFF"},
-            {"start": "DCF51B000000", "end": "DCF51BFFFFFF"}
+            {"start": "DCF51B000000", "end": "DCF51BFFFFFF"} # This range needs adjustment or new specific ranges
         ]
     },
     { # G3100 or E3200 - Threshold 2 (SSID Length 15, Admin Length 16)
@@ -181,7 +193,8 @@ MAC_DATA = [
             {"start": "62F853000000", "end": "62F8535BCD39"},
             {"start": "6AF853000000", "end": "6AF8535BCD39"},
             {"start": "72F853000000", "end": "72F8535BCD39"},
-            {"start": "B8F853000000", "end": "B8F8535BCD39"}
+            {"start": "B8F853000000", "end": "B8F8535BCD39"},
+            {"start": "DCF51B5FE687", "end": "DCF51B6B878F"} # New range for G3100/E3200
         ]
     },
     {
@@ -262,7 +275,7 @@ MAC_DATA = [
         "UUID": "d96c7efc2f8938f1efbd6e5148bfa812",
         "SSID": "FiOS-XXXXX or Fios-XXXXX",
         "SSID Password Length": "17 or 18",
-        "SSID Password Format": "<word><number><word><number>\nNote: <number> can be 1-5 digits\n      *It's rare, but some passwords are <number><word><number><word>\n      **This device is an Extender only, it is likely not broadcasting the default SSID/Password",
+        "SSID Password Format": "<word><number><word><number>\nNote: <number> can be 1-5 digits\n      *It's rare, but some passwords are <number><word><number><number><word>\n      **This device is an Extender only, it is likely not broadcasting the default SSID/Password",
         "SSID Password Ex:": "ionic03gander4phil",
         "Admin Password Length": "9 or 10",
         "Admin Password Format": "<word><number><word> or <number><word>",
@@ -288,14 +301,15 @@ MAC_DATA = [
 ]
 
 # Set of prefixes that trigger the special G3100/E3200 logic
-# This should include all OUIs that are part of the G3100/E3200 configurations
+# This is now less critical as range checks are universal, but good for OUI-only matching
 SPECIAL_CASE_G3100_PREFIXES = {
     "04A222", "62A222", "6AA222", "72A222",
     "62F853", "6AF853", "72F853", "B8F853",
     "3CBDC5", "62BDC5", "6ABDC5", "72BDC5",
-    "7490BC", "DCF51B"
+    "7490BC", "DCF51B" # Keep DCF51B here for general OUI matching if no specific range matches
 }
 
+# --- Utility Functions ---
 
 def clean_mac(mac_address):
     """Cleans a MAC address string by removing delimiters and converting to uppercase."""
@@ -338,10 +352,10 @@ def calculate_uuid(cleaned_mac, uuid_template, uuid_offset):
         # e.g., xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
         if len(calculated_uuid_hex) == 32:
             return (f"{calculated_uuid_hex[0:8]}-"
-                                    f"{calculated_uuid_hex[8:12]}-"
-                                    f"{calculated_uuid_hex[12:16]}-"
-                                    f"{calculated_uuid_hex[16:20]}-"
-                                    f"{calculated_uuid_hex[20:32]}")
+                            f"{calculated_uuid_hex[8:12]}-"
+                            f"{calculated_uuid_hex[12:16]}-"
+                            f"{calculated_uuid_hex[16:20]}-"
+                            f"{calculated_uuid_hex[20:32]}")
         else:
             return calculated_uuid_hex # Return as is if not 32 chars after replacement
 
@@ -353,7 +367,7 @@ def find_device_info(mac_address):
     """
     Finds and returns a list containing a single matching device information dictionary
     for a given MAC address.
-    Prioritizes G3100/E3200 models based on specific MAC ranges before general OUI matching.
+    Prioritizes specific MAC ranges over general OUI matching for all models.
     """
     cleaned_mac = clean_mac(mac_address)
     if len(cleaned_mac) != 12:
@@ -363,31 +377,34 @@ def find_device_info(mac_address):
     prefix_to_match = cleaned_mac[:6]
     full_mac_numeric = int(cleaned_mac, 16)
 
-    print(f"DEBUG: Processing MAC {cleaned_mac}, Prefix {prefix_to_match}, Numeric {full_mac_numeric}")
+    #print(f"DEBUG: Processing MAC {cleaned_mac}, Prefix {prefix_to_match}, Numeric {full_mac_numeric}")
 
-
-    # First, check for specific G3100/E3200 range matches
+    # First, check for any specific MAC_Ranges match across all entries
     for entry in MAC_DATA:
-        if entry["Model"] == "G3100 or E3200" and "MAC_Ranges" in entry:
-            print(f"DEBUG: Checking G3100/E3200 entry: Model={entry['Model']}, Admin Len={entry.get('Admin Password Length')}, SSID Len={entry.get('SSID Password Length')}")
+        if "MAC_Ranges" in entry:
             for mac_range in entry["MAC_Ranges"]:
-                range_start = int(clean_mac(mac_range["start"]), 16)
-                range_end = int(clean_mac(mac_range["end"]), 16)
-                print(f"DEBUG:   Checking range {hex(range_start)} to {hex(range_end)}")
+                try:
+                    range_start = int(clean_mac(mac_range["start"]), 16)
+                    range_end = int(clean_mac(mac_range["end"]), 16)
+                    
+                    #print(f"DEBUG: Checking range {mac_range['start']}-{mac_range['end']} (Start={range_start}, End={range_end}) for Model={entry['Model']}")
 
-                if range_start <= full_mac_numeric <= range_end:
-                    print(f"DEBUG:   MATCH FOUND in G3100/E3200 range: {entry['Model']} with Admin Len {entry.get('Admin Password Length')}")
-                    return [entry], format_mac(prefix_to_match)
+                    if range_start <= full_mac_numeric <= range_end:
+                        #print(f"DEBUG: MATCH FOUND in range for Model: {entry['Model']}")
+                        return [entry], format_mac(prefix_to_match)
+                except ValueError:
+                    #print(f"DEBUG: Skipping malformed range: {mac_range}")
+                    continue
 
-    # If no specific G3100/E3200 range match, proceed with general OUI matching
-    print("DEBUG: No specific G3100/E3200 range match found. Checking general OUI prefixes.")
+    # If no MAC_Ranges match was found, proceed with general OUI matching
+    #print("DEBUG: No specific MAC range match found. Checking general OUI prefixes.")
     for entry in MAC_DATA:
         model_prefixes = parse_mac_prefix_string(entry["MAC Prefix"])
         if prefix_to_match in model_prefixes:
-            print(f"DEBUG: GENERAL OUI MATCH FOUND for {entry['Model']} with prefix {prefix_to_match}")
+            #print(f"DEBUG: GENERAL OUI MATCH FOUND for {entry['Model']} with prefix {prefix_to_match}")
             return [entry], format_mac(prefix_to_match)
             
-    print("DEBUG: No match found after all checks.")
+    #print("DEBUG: No match found after all checks.")
     return [], None
 
 
@@ -407,6 +424,10 @@ def print_device_info(mac, matches, matched_prefix):
         if matched_prefix:
             print(f"Matched Prefix: {matched_prefix}")
         print(f"Model: {info.get('Model', 'N/A')}")
+        # Include Threshold if it's a G3100/E3200 entry and has this custom field
+        if info.get("Model") == "G3100 or E3200" and "Threshold" in info:
+            print(f"Threshold: {info.get('Threshold', 'N/A')}")
+
         print(f"Manufacture: {info.get('Manufacture', 'N/A')}")
         print(f"Device: {info.get('Device', 'N/A')}")
         print(f"Serial Prefix: {info.get('Serial Prefix', 'N/A')}")
@@ -464,6 +485,7 @@ def get_macs_from_file(filepath):
     try:
         with open(filepath, 'r') as f:
             for line in f:
+                # Split by comma, semicolon, or whitespace and extend the list
                 mac_addresses.extend([m.strip() for m in re.split(r'[,;\s]+', line) if m.strip()])
     except FileNotFoundError:
         print(f"Error: File not found at {filepath}")
